@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "\nselect\n    card_id as id, title, text\nfrom\n    cards\nlimit 20",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Int64"
+      },
+      {
+        "name": "title",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "text",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e02e2977d792259261278bb70d5221ca70580633d471ce016d45fedfe1ccbf01"
+}
