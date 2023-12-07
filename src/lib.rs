@@ -3,14 +3,17 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow;
+use auth::build_auth_router;
 use axum::extract::State;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, Router};
 use dotenvy::dotenv;
 use hyper::StatusCode;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Sqlite};
 use tera::Tera;
+
+mod auth;
 
 const TEMPLATES_DIR: &str = "templates";
 
@@ -38,14 +41,6 @@ struct Card
 pub async fn run_server() -> anyhow::Result<()>
 {
     let state = setup_server_state().await?;
-    let card = Card { card_id: 0, title: "Hello".into(), text: "where".into() };
-    sqlx::query!(
-        "insert into cards (title, text) values ($1, $2)",
-        card.title,
-        card.text
-    )
-    .execute(&state.db)
-    .await?;
     let app = setup_router(state.into());
     axum::Server::bind(&"0.0.0.0:3000".parse()?)
         .serve(app.into_make_service())
@@ -78,22 +73,30 @@ pub async fn setup_server_state() -> anyhow::Result<ServerState>
 
 pub fn setup_router(state: Arc<ServerState>) -> Router
 {
+    let auth = build_auth_router(state.clone());
     Router::new()
+        .route("/", get(home_page))
         .route("/cards", get(list_cards))
-        .fallback(handler_404)
         .with_state(state)
+        .merge(auth)
+        .fallback(handler_404)
+}
+
+async fn home_page() -> Result<Html<String>, AppError>
+{
+    let r = "<html><p>Hello world</p></html>".to_owned();
+    Ok(Html(r))
 }
 
 async fn list_cards(State(state): StateTy) -> Result<(), AppError>
 {
     let cards: Vec<Card> = sqlx::query_as!(
         Card,
-        "
-select
-    card_id, title, text
-from
-    cards
-limit 20"
+        "select
+            card_id, title, text
+        from
+            cards
+        limit 20"
     )
     .fetch_all(&state.db)
     .await?;
