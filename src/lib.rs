@@ -1,5 +1,6 @@
 use std::env;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow;
@@ -12,10 +13,13 @@ use hyper::StatusCode;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Sqlite};
 use tera::Tera;
+use tower_http::services::ServeDir;
 
 mod auth;
 
 const TEMPLATES_DIR: &str = "templates";
+const STATIC_DIR: &str = "static";
+const ROOT_DIR: &str = env!("CARGO_MANIFEST_DIR"); // NOTE(hqhs): won't compile on systems with non-utf8 paths, but project is not expected to run everywhere
 
 pub struct ServerState
 {
@@ -41,7 +45,7 @@ struct Card
 pub async fn run_server() -> anyhow::Result<()>
 {
     let state = setup_server_state().await?;
-    let app = setup_router(state.into());
+    let app = setup_router(state.into())?;
     axum::Server::bind(&"0.0.0.0:3000".parse()?)
         .serve(app.into_make_service())
         .await?;
@@ -71,20 +75,34 @@ pub async fn setup_server_state() -> anyhow::Result<ServerState>
     Ok(ServerState { db: pool, templates })
 }
 
-pub fn setup_router(state: Arc<ServerState>) -> Router
+pub fn setup_router(state: Arc<ServerState>) -> anyhow::Result<Router>
 {
     let auth = build_auth_router(state.clone());
-    Router::new()
+    let static_files: Router = {
+        let path: PathBuf = [ROOT_DIR, STATIC_DIR].iter().collect();
+        if !path.is_dir()
+        {
+            anyhow::bail!(
+                "{} directory does not exist",
+                path.to_string_lossy()
+            );
+        }
+        Router::new().nest_service("/static", ServeDir::new(path))
+    };
+    let r = Router::new()
         .route("/", get(home_page))
         .route("/cards", get(list_cards))
         .with_state(state)
         .merge(auth)
-        .fallback(handler_404)
+        .merge(static_files)
+        .fallback(handler_404);
+    Ok(r)
 }
 
-async fn home_page() -> Result<Html<String>, AppError>
+async fn home_page(State(state): StateTy) -> Result<Html<String>, AppError>
 {
-    let r = "<html><p>Hello world</p></html>".to_owned();
+    let context = tera::Context::new();
+    let r = state.templates.render("base.jinja2", &context)?;
     Ok(Html(r))
 }
 

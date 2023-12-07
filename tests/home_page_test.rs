@@ -8,7 +8,7 @@ use axum_test::TestServer;
 async fn home_page_test() -> anyhow::Result<()>
 {
     let state = setup_server_state().await?;
-    let router = setup_router(state.into());
+    let router = setup_router(state.into())?;
     let server = TestServer::new(router)?;
     {
         let response = server.get("/cards").await;
