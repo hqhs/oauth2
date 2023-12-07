@@ -8,8 +8,6 @@ name = "service"
 path = "bin/service.rs"
 
 [dependencies]
-# logging
-slog = "2.7.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
@@ -35,9 +33,12 @@ anyhow = "1.0.75"
 dotenvy = "0.15.7"
 
 sqlx = { version = "0.7", features = [ "runtime-tokio", "tls-rustls", "sqlite", "migrate" ] }
-
 getrandom = { version = "0.2.10", features = ["js"]}
 axum-macros = "0.4.0"
+async-trait = "0.1.74"
+slog = { version = "2.7.0", features = ["max_level_trace", "release_max_level_info"] }
+slog-async = "2.8.0"
+slog-term = "2.9.0"
 
 [profile.release]
 lto = true
@@ -46,3 +47,4 @@ codegen-units = 1
 
 [dev-dependencies]
 axum-test = "13.1.1"
+
