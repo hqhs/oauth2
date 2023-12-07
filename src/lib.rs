@@ -3,15 +3,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use anyhow;
 use auth::build_auth_router;
 use axum::extract::State;
-use axum::middleware::{self, Next};
+use axum::middleware::{self};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post, Router};
-use axum::{
-    http::Request,
-    response::{Html, IntoResponse, Redirect, Response},
-};
 use dotenvy::dotenv;
 use hyper::StatusCode;
 use serde::Serialize;
@@ -69,19 +65,6 @@ impl ServerState
 }
 
 type StateTy = State<Arc<ServerState>>;
-
-fn print_type_of<T>(_: &T)
-{
-    println!("{}", std::any::type_name::<T>())
-}
-
-#[derive(sqlx::FromRow)]
-struct Card
-{
-    card_id: i64,
-    title: String,
-    text: String,
-}
 
 pub async fn run_server() -> anyhow::Result<()>
 {
@@ -190,7 +173,7 @@ async fn handler_404() -> impl IntoResponse
 }
 
 // Make our own error that wraps `anyhow::Error`.
-struct AppError(anyhow::Error);
+pub struct AppError(anyhow::Error);
 
 // Tell axum how to convert `AppError` into a response.
 impl IntoResponse for AppError

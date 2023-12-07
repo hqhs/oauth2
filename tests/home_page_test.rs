@@ -1,5 +1,3 @@
-use anyhow;
-
 use template::{setup_router, setup_server_state};
 
 use axum_test::TestServer;

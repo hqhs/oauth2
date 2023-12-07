@@ -1,5 +1,3 @@
-use anyhow;
-
 use template::run_server;
 
 #[tokio::main]
