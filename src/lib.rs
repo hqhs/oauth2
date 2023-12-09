@@ -3,7 +3,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use auth::build_auth_router;
 use axum::middleware::{self};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post, Router};
@@ -22,6 +21,8 @@ use tower_http::services::ServeDir;
 use uuid::Uuid;
 
 mod auth;
+
+use auth::{build_auth_router, Session};
 
 const TEMPLATES_DIR: &str = "templates";
 const STATIC_DIR: &str = "static";
@@ -84,6 +85,8 @@ pub struct RequestContext
     pub server: Arc<ServerState>,
     pub request_id: String,
     pub log: slog::Logger,
+
+    pub session: Option<Session>,
 }
 
 type StateTy = State<Arc<ServerState>>;
@@ -112,7 +115,8 @@ pub async fn common_request_context_middleware<B>(
         "uri" => req.uri().to_string(),
         "method" => req.method().as_str().to_owned(),
     ));
-    let cx = RequestContext { server: state.clone(), request_id, log };
+    let session = None;
+    let cx = RequestContext { server: state.clone(), session, request_id, log };
     trace!(
         cx.log,
         "request";
@@ -180,7 +184,7 @@ pub fn setup_router(state: Arc<ServerState>) -> anyhow::Result<Router>
         .route("/profile", get(profile))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            auth::check_user_session,
+            auth::redirect_unauthorized_middleware,
         ))
         .route_layer(commont_cx_middleware);
 

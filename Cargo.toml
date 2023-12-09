@@ -41,6 +41,7 @@ slog-async = "2.8.0"
 slog-term = "2.9.0"
 uuid = { version = "1.6.1", features = ["v4"]}
 thiserror = "1.0.50"
+oauth2 = { version = "4.4.2", featuers = ["reqwest", 'rustls-tls'] }
 
 [profile.release]
 lto = true

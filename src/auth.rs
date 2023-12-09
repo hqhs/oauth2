@@ -4,10 +4,11 @@ use axum::{
     extract::State,
     http::Request,
     middleware::{self, Next},
-    response::{Html, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, Router},
     Extension,
 };
+use axum_extra::extract::CookieJar;
 use serde_json::Value;
 use slog::{error, trace};
 use uuid::Uuid;
@@ -18,12 +19,12 @@ use crate::{
 };
 
 const SESSION_ID_COOKIE: &str = "session-id";
-type SessionID = Uuid;
+const LOGIN_PAGE: &str = "/login";
 
 pub fn build_auth_router(state: Arc<ServerState>) -> Router
 {
     Router::new()
-        .route("/login", get(login_options))
+        .route(LOGIN_PAGE, get(login_options))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             common_request_context_middleware,
@@ -31,16 +32,50 @@ pub fn build_auth_router(state: Arc<ServerState>) -> Router
         .with_state(state)
 }
 
-pub async fn check_user_session<B>(
+pub async fn fetch_session_from_cookies(
+    jar: &CookieJar,
+    server: &ServerState,
+) -> Result<Session, AppError>
+{
+    // let session_id =
+    //     jar.get(SESSION_ID_COOKIE).ok_or(AuthError::MissingSessionID)?;
+    // let session_id = Uuid::try_parse(session_id.value())
+    //     .map_err(|_| AuthError::InvalidSessionID)?;
+    unimplemented!("implement me");
+}
+
+pub async fn redirect_unauthorized_middleware<B>(
     State(_state): StateTy,
     req: Request<B>,
     next: Next<B>,
 ) -> Result<Response, AppError>
 {
+    // NOTE: unwrap here is safe since request context is not optional,
+    // it's expected to be set for each request in `common_request_context_middleware`
+    // if it's missing, it's a bug
+    let cx = req.extensions().get::<RequestContext>().unwrap();
+    if cx.session.is_none()
+    {
+        let redirect = Redirect::to(LOGIN_PAGE);
+        return Ok(redirect.into_response());
+    }
     Ok(next.run(req).await)
 }
 
-struct Session {}
+type SessionID = Uuid;
+
+#[derive(Clone)]
+pub struct Session
+{
+    session_id: SessionID,
+}
+
+type UserID = Uuid;
+
+pub struct User
+{
+    user_id: UserID,
+}
 
 async fn login_options(
     Extension(cx): Extension<RequestContext>,
