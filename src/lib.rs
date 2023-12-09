@@ -185,7 +185,12 @@ pub async fn setup_server_state(config: Config) -> anyhow::Result<ServerState>
         .client_id(&config.discord_oauth_client_id)
         .client_secret(&config.discord_oauth_client_secret)
         .build();
-    let microsoft_auth_client = Oauth2Builder::new(HOST, MICROSOFT_CALLBACK)
+    // let microsoft_auth_client = Oauth2Builder::new(HOST, MICROSOFT_CALLBACK)
+    //     .auth_url()
+    //     .token_url()
+    //     .client_id()
+    //     .client_secret()
+    //     .build()
 
     Ok(ServerState {
         db: pool,
