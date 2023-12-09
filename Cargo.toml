@@ -36,10 +36,10 @@ sqlx = { version = "0.7", features = [ "runtime-tokio", "tls-rustls", "sqlite", 
 getrandom = { version = "0.2.10", features = ["js"]}
 axum-macros = "0.4.0"
 async-trait = "0.1.74"
-slog = { version = "2.7.0", features = ["max_level_trace", "release_max_level_info"] }
+slog = { version = "2.7.0", features = ["max_level_trace", "release_max_level_info" ] }
 slog-async = "2.8.0"
 slog-term = "2.9.0"
-uuid = "1.6.1"
+uuid = { version = "1.6.1", features = ["v4"]}
 
 [profile.release]
 lto = true

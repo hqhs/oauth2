@@ -18,6 +18,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Sqlite};
 use tera::Tera;
 use tower_http::services::ServeDir;
+use uuid::Uuid;
 
 mod auth;
 
@@ -69,7 +70,7 @@ impl ServerState
 pub struct RequestContext
 {
     pub server: Arc<ServerState>,
-    // pub request_id: Uuid,
+    pub request_id: String,
     pub log: slog::Logger,
 }
 
@@ -93,8 +94,14 @@ pub async fn common_request_context_middleware<B>(
     next: Next<B>,
 ) -> Result<Response, AppError>
 {
-    let log = state.root.new(o!("key" => "value"));
-    let cx = RequestContext { server: state.clone(), log };
+    let request_id = Uuid::new_v4().to_string();
+    let log = state.root.new(o!("request_id" => request_id.clone()));
+    let cx = RequestContext { server: state.clone(), request_id, log };
+    trace!(
+        cx.log,
+        "request"; "uri" => req.uri().to_string(),
+        "method" => req.method().as_str(),
+    );
     req.extensions_mut().insert(cx);
     Ok(next.run(req).await)
 }
@@ -175,7 +182,6 @@ async fn reload_templates(
     Extension(cx): Extension<RequestContext>,
 ) -> impl IntoResponse
 {
-    trace! { cx.log, "received request"; "page" => "reload_templates" };
     cx.server.reload_templates()?;
     let r: Result<_, AppError> = Ok(StatusCode::OK);
     r
@@ -184,7 +190,6 @@ async fn reload_templates(
 async fn profile(Extension(cx): Extension<RequestContext>)
     -> impl IntoResponse
 {
-    trace! {cx.log, "received request"; "page" => "profile"};
     let page = cx.server.render("base.jinja2", Value::Null)?;
     let r: Result<_, AppError> = Ok(Html(page));
     r
