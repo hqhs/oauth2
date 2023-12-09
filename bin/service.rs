@@ -1,7 +1,23 @@
-use template::run_server;
+use std::env;
+
+use template::{run_server, Config};
+
+use dotenvy::dotenv;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()>
 {
-    run_server().await
+    dotenv().ok();
+
+    let cfg = Config {
+        dev_mode: true,
+
+        google_oauth_client_id: env::var("GOOGLE_CLIENT_ID")?,
+        google_oauth_client_secret: env::var("GOOGLE_CLIENT_SECRET")?,
+
+        discord_oauth_client_id: env::var("DISCORD_CLIENT_ID")?,
+        discord_oauth_client_secret: env::var("DISCORD_CLIENT_SECRET")?,
+    };
+
+    run_server(cfg).await
 }

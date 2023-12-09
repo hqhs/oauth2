@@ -10,6 +10,7 @@ use axum::Extension;
 use axum::{extract::State, http::Request, middleware::Next};
 use dotenvy::dotenv;
 use hyper::StatusCode;
+use oauth2::basic::BasicClient;
 use serde::Serialize;
 use serde_json::{self, Value};
 use slog::{debug, error, info, o, trace, Drain};
@@ -22,7 +23,10 @@ use uuid::Uuid;
 
 mod auth;
 
-use auth::{build_auth_router, Session};
+use auth::{
+    build_auth_router, Oauth2Builder, Session, DISCORD_CALLBACK,
+    GOOGLE_CALLBACK, MICROSOFT_CALLBACK,
+};
 
 const TEMPLATES_DIR: &str = "templates";
 const STATIC_DIR: &str = "static";
@@ -43,6 +47,11 @@ pub struct ServerState
     templates: RwLock<Tera>,
     db: Pool<Sqlite>,
     root: slog::Logger,
+
+    config: Config,
+
+    google_auth_client: BasicClient,
+    discord_auth_client: BasicClient,
 }
 
 impl ServerState
@@ -54,7 +63,7 @@ impl ServerState
         other: serde_json::Value,
     ) -> Result<String, AppError>
     {
-        let dev_mode = true;
+        let dev_mode = cx.server.config.dev_mode;
         let request_id = cx.request_id.clone();
         let params = Common { dev_mode, request_id, other };
         let template_cx = tera::Context::from_serialize(params)?;
@@ -91,9 +100,21 @@ pub struct RequestContext
 
 type StateTy = State<Arc<ServerState>>;
 
-pub async fn run_server() -> anyhow::Result<()>
+#[derive(Default)]
+pub struct Config
 {
-    let state = Arc::new(setup_server_state().await?);
+    pub dev_mode: bool,
+
+    pub google_oauth_client_id: String,
+    pub google_oauth_client_secret: String,
+
+    pub discord_oauth_client_id: String,
+    pub discord_oauth_client_secret: String,
+}
+
+pub async fn run_server(cfg: Config) -> anyhow::Result<()>
+{
+    let state = Arc::new(setup_server_state(cfg).await?);
     let app = setup_router(state.clone())?;
     let address = "0.0.0.0:3000";
     info!(state.root, "serving requests on {address}");
@@ -125,9 +146,8 @@ pub async fn common_request_context_middleware<B>(
     Ok(next.run(req).await)
 }
 
-pub async fn setup_server_state() -> anyhow::Result<ServerState>
+pub async fn setup_server_state(config: Config) -> anyhow::Result<ServerState>
 {
-    dotenv().ok();
     let root = {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::FullFormat::new(decorator).build().fuse();
@@ -152,7 +172,29 @@ pub async fn setup_server_state() -> anyhow::Result<ServerState>
         templates.autoescape_on(vec![".jinja2"]);
         RwLock::new(templates)
     };
-    Ok(ServerState { db: pool, root, templates })
+    const HOST: &str = "http://localhost:3000";
+    let google_auth_client = Oauth2Builder::new(HOST, GOOGLE_CALLBACK)
+        .auth_url("https://accounts.google.com/o/oauth2/v2/auth")
+        .token_url("https://www.googleapis.com/oauth2/v3/token")
+        .client_id(&config.google_oauth_client_id)
+        .client_secret(&config.google_oauth_client_secret)
+        .build();
+    let discord_auth_client = Oauth2Builder::new(HOST, DISCORD_CALLBACK)
+        .auth_url("https://discord.com/oauth2/authorize")
+        .token_url("https://discord.com/api/v10/oauth2/token")
+        .client_id(&config.discord_oauth_client_id)
+        .client_secret(&config.discord_oauth_client_secret)
+        .build();
+    let microsoft_auth_client = Oauth2Builder::new(HOST, MICROSOFT_CALLBACK)
+
+    Ok(ServerState {
+        db: pool,
+        root,
+        templates,
+        config,
+        google_auth_client,
+        discord_auth_client,
+    })
 }
 
 pub fn setup_router(state: Arc<ServerState>) -> anyhow::Result<Router>

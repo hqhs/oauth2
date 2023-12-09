@@ -9,10 +9,12 @@
     </div>
 
     <div class="mt-5 sm:mx-auto sm:w-full sm:max-w-sm">
-        <button type="submit" class="flex items-center bg-indigo-500 w-full border border-transparent py-3 px-6 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+        <button type="button" class="flex items-center bg-indigo-500 w-full border border-transparent py-3 px-6 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
             <i class="fa-brands fa-discord fa-2xl" ></i>
             <div class="pl-10">
-                Continue with Discord
+                <a href="{{ discord_auth_url }}">
+                    Continue with Discord
+                </a>
             </div>
         </button>
     </div>
@@ -20,7 +22,9 @@
         <button type="submit" class="flex items-center bg-blue-500 w-full border border-transparent py-3 px-6 text-sm font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
             <i class="fa-brands fa-google fa-2xl" ></i>
             <div class="pl-10">
-                Continue with Google
+                <a href="{{ google_auth_url }}">
+                    Continue with Google
+                </a>
             </div>
         </button>
     </div>
@@ -38,6 +42,7 @@
             <div class="pl-10">
                 Continue with Apple
             </div>
+
         </button>
     </div>
 </div>
