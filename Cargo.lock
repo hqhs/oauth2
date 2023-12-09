@@ -2263,6 +2263,7 @@ dependencies = [
  "slog-term",
  "sqlx",
  "tera",
+ "thiserror",
  "tokio",
  "tokio-util",
  "tower",

@@ -11,7 +11,12 @@
         <link href="/static/font-awesome/css/fontawesome.min.css" rel="stylesheet" />
         <link href="/static/font-awesome/css/brands.min.css" rel="stylesheet" />
         <link href="/static/font-awesome/css/solid.min.css" rel="stylesheet" />
-        <link href="/static/tailwind.css" rel="stylesheet" />
+        {% if dev_mode %}
+            {# to prevent css mode caching in dev mode #}
+            <link href="/static/tailwind.css?{{ request_id }}" rel="stylesheet" />
+        {% else %}
+            <link href="/static/tailwind.css" rel="stylesheet" />
+        {% endif %}
 
         <script defer src="/static/alpine.js"></script>
         <script src="/static/htmx.min.js"></script>

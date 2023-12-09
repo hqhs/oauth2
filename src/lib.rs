@@ -13,10 +13,11 @@ use dotenvy::dotenv;
 use hyper::StatusCode;
 use serde::Serialize;
 use serde_json::{self, Value};
-use slog::{debug, info, o, trace, Drain};
+use slog::{debug, error, info, o, trace, Drain};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Sqlite};
 use tera::Tera;
+use thiserror;
 use tower_http::services::ServeDir;
 use uuid::Uuid;
 
@@ -30,6 +31,7 @@ const ROOT_DIR: &str = env!("CARGO_MANIFEST_DIR"); // NOTE(hqhs): won't compile 
 struct Common
 {
     dev_mode: bool,
+    request_id: String, // NOTE: one less allocation if it's &str
 
     #[serde(flatten)]
     other: serde_json::Value,
@@ -46,15 +48,25 @@ impl ServerState
 {
     fn render(
         &self,
+        cx: &RequestContext,
         template: &str,
         other: serde_json::Value,
     ) -> Result<String, AppError>
     {
         let dev_mode = true;
-        let params = Common { dev_mode, other };
-        let cx = tera::Context::from_serialize(params)?;
+        let request_id = cx.request_id.clone();
+        let params = Common { dev_mode, request_id, other };
+        let template_cx = tera::Context::from_serialize(params)?;
         let unlocked = self.templates.read().unwrap();
-        let page = unlocked.render(template, &cx)?;
+        let maybe_page = unlocked.render(template, &template_cx);
+        if let Err(ref err) = maybe_page
+        {
+            // NOTE: it's fine to log error internally since templates
+            // are expected to always work, and all rendering happens threw
+            // this method
+            error!(cx.log, "failed to render {template}: {err}");
+        }
+        let page = maybe_page?;
         Ok(page)
     }
 
@@ -95,12 +107,15 @@ pub async fn common_request_context_middleware<B>(
 ) -> Result<Response, AppError>
 {
     let request_id = Uuid::new_v4().to_string();
-    let log = state.root.new(o!("request_id" => request_id.clone()));
+    let log = state.root.new(o!(
+        "request_id" => request_id.clone(),
+        "uri" => req.uri().to_string(),
+        "method" => req.method().as_str().to_owned(),
+    ));
     let cx = RequestContext { server: state.clone(), request_id, log };
     trace!(
         cx.log,
-        "request"; "uri" => req.uri().to_string(),
-        "method" => req.method().as_str(),
+        "request";
     );
     req.extensions_mut().insert(cx);
     Ok(next.run(req).await)
@@ -171,8 +186,8 @@ pub fn setup_router(state: Arc<ServerState>) -> anyhow::Result<Router>
 
     let r = Router::new()
         .merge(public)
-        .merge(authorized_only)
         .merge(auth)
+        .merge(authorized_only)
         .merge(static_files)
         .fallback(handler_404);
     Ok(r)
@@ -190,7 +205,7 @@ async fn reload_templates(
 async fn profile(Extension(cx): Extension<RequestContext>)
     -> impl IntoResponse
 {
-    let page = cx.server.render("base.jinja2", Value::Null)?;
+    let page = cx.server.render(&cx, "base.jinja2", Value::Null)?;
     let r: Result<_, AppError> = Ok(Html(page));
     r
 }
@@ -209,29 +224,25 @@ async fn handler_404() -> impl IntoResponse
 }
 
 // Make our own error that wraps `anyhow::Error`.
-pub struct AppError(anyhow::Error);
+#[derive(thiserror::Error, Debug)]
+pub enum AppError
+{
+    #[error("failed to render template: `{0}`")]
+    Template(#[from] tera::Error),
+    #[error("something unexpected happened: `{0}`")]
+    Opaque(#[from] anyhow::Error),
+}
 
 // Tell axum how to convert `AppError` into a response.
 impl IntoResponse for AppError
 {
     fn into_response(self) -> Response
     {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Something went wrong: {}", self.0),
-        )
-            .into_response()
-    }
-}
-
-// This enables using `?` on functions that return `Result<_, anyhow::Error>` to turn them into
-// `Result<_, AppError>`. That way you don't need to do that manually.
-impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error>,
-{
-    fn from(err: E) -> Self
-    {
-        Self(err.into())
+        let code = match self
+        {
+            AppError::Opaque(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::Template(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        code.into_response()
     }
 }

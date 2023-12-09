@@ -9,7 +9,7 @@ use axum::{
     Extension,
 };
 use serde_json::Value;
-use slog::trace;
+use slog::{error, trace};
 use uuid::Uuid;
 
 use crate::{
@@ -24,7 +24,6 @@ pub fn build_auth_router(state: Arc<ServerState>) -> Router
 {
     Router::new()
         .route("/login", get(login_options))
-        .route("/login/discord", get(login_with_discord_page))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             common_request_context_middleware,
@@ -47,8 +46,8 @@ async fn login_options(
     Extension(cx): Extension<RequestContext>,
 ) -> Result<Html<String>, AppError>
 {
-    trace! {cx.log, "received request"; "page" => "profile"};
-    let page = cx.server.render("login_options.jinja2", Value::Null)?;
+    let template = "login_options.jinja2";
+    let page = cx.server.render(&cx, template, Value::Null)?;
     let r: Result<_, AppError> = Ok(Html(page));
     r
 }
@@ -56,9 +55,3 @@ async fn login_options(
 /*
  * SECTION: DISCORD AUTH
  */
-
-async fn login_with_discord_page() -> Result<Html<String>, AppError>
-{
-    let r = "<html><p>Hello world</p></html>".to_owned();
-    Ok(Html(r))
-}

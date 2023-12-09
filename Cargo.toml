@@ -40,6 +40,7 @@ slog = { version = "2.7.0", features = ["max_level_trace", "release_max_level_in
 slog-async = "2.8.0"
 slog-term = "2.9.0"
 uuid = { version = "1.6.1", features = ["v4"]}
+thiserror = "1.0.50"
 
 [profile.release]
 lto = true
