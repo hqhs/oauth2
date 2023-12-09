@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use auth::build_auth_router;
-use axum::extract::State;
 use axum::middleware::{self};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post, Router};
+use axum::Extension;
+use axum::{extract::State, http::Request, middleware::Next};
 use dotenvy::dotenv;
 use hyper::StatusCode;
 use serde::Serialize;
@@ -35,9 +36,9 @@ struct Common
 
 pub struct ServerState
 {
-    db: Pool<Sqlite>,
-    log: slog::Logger,
     templates: RwLock<Tera>,
+    db: Pool<Sqlite>,
+    root: slog::Logger,
 }
 
 impl ServerState
@@ -58,10 +59,18 @@ impl ServerState
 
     fn reload_templates(&self) -> tera::Result<()>
     {
-        info!(self.log, "template reload requested");
+        info!(self.root, "template reload requested");
         let mut unlocked = self.templates.write().unwrap();
         unlocked.full_reload()
     }
+}
+
+#[derive(Clone)]
+pub struct RequestContext
+{
+    pub server: Arc<ServerState>,
+    // pub request_id: Uuid,
+    pub log: slog::Logger,
 }
 
 type StateTy = State<Arc<ServerState>>;
@@ -71,23 +80,35 @@ pub async fn run_server() -> anyhow::Result<()>
     let state = Arc::new(setup_server_state().await?);
     let app = setup_router(state.clone())?;
     let address = "0.0.0.0:3000";
-    info!(state.log, "serving requests on {address}");
+    info!(state.root, "serving requests on {address}");
     axum::Server::bind(&address.parse()?)
         .serve(app.into_make_service())
         .await?;
     Ok(())
 }
 
+pub async fn common_request_context_middleware<B>(
+    State(state): StateTy,
+    mut req: Request<B>,
+    next: Next<B>,
+) -> Result<Response, AppError>
+{
+    let log = state.root.new(o!("key" => "value"));
+    let cx = RequestContext { server: state.clone(), log };
+    req.extensions_mut().insert(cx);
+    Ok(next.run(req).await)
+}
+
 pub async fn setup_server_state() -> anyhow::Result<ServerState>
 {
     dotenv().ok();
-    let log = {
+    let root = {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::FullFormat::new(decorator).build().fuse();
         let drain = slog_async::Async::new(drain).build().fuse();
         slog::Logger::root(drain, o!())
     };
-    debug!(log, "hello where, general kenobi");
+    debug!(root, "hello where, general kenobi");
     let database_url =
         env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = SqlitePoolOptions::new()
@@ -105,7 +126,7 @@ pub async fn setup_server_state() -> anyhow::Result<ServerState>
         templates.autoescape_on(vec![".jinja2"]);
         RwLock::new(templates)
     };
-    Ok(ServerState { db: pool, log, templates })
+    Ok(ServerState { db: pool, root, templates })
 }
 
 pub fn setup_router(state: Arc<ServerState>) -> anyhow::Result<Router>
@@ -123,10 +144,15 @@ pub fn setup_router(state: Arc<ServerState>) -> anyhow::Result<Router>
         Router::new().nest_service("/static", ServeDir::new(path))
     };
 
+    let commont_cx_middleware = middleware::from_fn_with_state(
+        state.clone(),
+        common_request_context_middleware,
+    );
+
     let public = Router::new()
         .route("/", get(home_page))
         .route("/reload", post(reload_templates))
-        .with_state(state.clone());
+        .route_layer(commont_cx_middleware.clone());
 
     let authorized_only = Router::new()
         .route("/profile", get(profile))
@@ -134,7 +160,7 @@ pub fn setup_router(state: Arc<ServerState>) -> anyhow::Result<Router>
             state.clone(),
             auth::check_user_session,
         ))
-        .with_state(state.clone());
+        .route_layer(commont_cx_middleware);
 
     let r = Router::new()
         .merge(public)
@@ -145,25 +171,30 @@ pub fn setup_router(state: Arc<ServerState>) -> anyhow::Result<Router>
     Ok(r)
 }
 
-async fn reload_templates(State(state): StateTy) -> impl IntoResponse
+async fn reload_templates(
+    Extension(cx): Extension<RequestContext>,
+) -> impl IntoResponse
 {
-    trace! { state.log, "received request"; "page" => "reload_templates" };
-    state.reload_templates()?;
+    trace! { cx.log, "received request"; "page" => "reload_templates" };
+    cx.server.reload_templates()?;
     let r: Result<_, AppError> = Ok(StatusCode::OK);
     r
 }
 
-async fn profile(State(state): StateTy) -> impl IntoResponse
+async fn profile(Extension(cx): Extension<RequestContext>)
+    -> impl IntoResponse
 {
-    trace! {state.log, "received request"; "page" => "profile"};
-    let page = state.render("base.jinja2", Value::Null)?;
+    trace! {cx.log, "received request"; "page" => "profile"};
+    let page = cx.server.render("base.jinja2", Value::Null)?;
     let r: Result<_, AppError> = Ok(Html(page));
     r
 }
 
-async fn home_page(State(state): StateTy) -> impl IntoResponse
+async fn home_page(
+    Extension(cx): Extension<RequestContext>,
+) -> impl IntoResponse
 {
-    trace! {state.log, "received request"; "page" => "home"};
+    trace! {cx.log, "received request"; "page" => "home"};
     Redirect::to("/profile")
 }
 
