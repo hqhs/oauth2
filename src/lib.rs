@@ -11,6 +11,7 @@ use axum::{extract::State, http::Request, middleware::Next};
 use dotenvy::dotenv;
 use hyper::StatusCode;
 use oauth2::basic::BasicClient;
+use reqwest;
 use serde::Serialize;
 use serde_json::{self, Value};
 use slog::{debug, error, info, o, trace, Drain};
@@ -25,7 +26,7 @@ mod auth;
 
 use auth::{
     build_auth_router, Oauth2Builder, Session, DISCORD_CALLBACK,
-    GOOGLE_CALLBACK, MICROSOFT_CALLBACK,
+    GOOGLE_CALLBACK, MICROSOFT_CALLBACK, TWITCH_CALLBACK,
 };
 
 const TEMPLATES_DIR: &str = "templates";
@@ -47,11 +48,13 @@ pub struct ServerState
     templates: RwLock<Tera>,
     db: Pool<Sqlite>,
     root: slog::Logger,
+    client: reqwest::Client,
 
     config: Config,
 
     google_auth_client: BasicClient,
     discord_auth_client: BasicClient,
+    twitch_auth_client: BasicClient,
 }
 
 impl ServerState
@@ -110,6 +113,9 @@ pub struct Config
 
     pub discord_oauth_client_id: String,
     pub discord_oauth_client_secret: String,
+
+    pub twitch_client_id: String,
+    pub twitch_client_secret: String,
 }
 
 pub async fn run_server(cfg: Config) -> anyhow::Result<()>
@@ -185,6 +191,12 @@ pub async fn setup_server_state(config: Config) -> anyhow::Result<ServerState>
         .client_id(&config.discord_oauth_client_id)
         .client_secret(&config.discord_oauth_client_secret)
         .build();
+    let twitch_auth_client = Oauth2Builder::new(HOST, TWITCH_CALLBACK)
+        .auth_url("https://id.twitch.tv/oauth2/authorize")
+        .token_url("https://id.twitch.tv/oauth2/token")
+        .client_id(&config.twitch_client_id)
+        .client_secret(&config.twitch_client_secret)
+        .build();
     // let microsoft_auth_client = Oauth2Builder::new(HOST, MICROSOFT_CALLBACK)
     //     .auth_url()
     //     .token_url()
@@ -192,13 +204,17 @@ pub async fn setup_server_state(config: Config) -> anyhow::Result<ServerState>
     //     .client_secret()
     //     .build()
 
+    let client = reqwest::Client::new();
+
     Ok(ServerState {
         db: pool,
         root,
         templates,
+        client,
         config,
         google_auth_client,
         discord_auth_client,
+        twitch_auth_client,
     })
 }
 

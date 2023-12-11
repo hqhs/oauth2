@@ -33,6 +33,7 @@ pub fn build_auth_router(state: Arc<ServerState>) -> Router
     Router::new()
         .route(LOGIN_PAGE, get(login_options))
         .route(DISCORD_CALLBACK, get(discord_callback))
+        .route(TWITCH_CALLBACK, get(twitch_callback))
         .route(GOOGLE_CALLBACK, get(google_callback))
         .route(MICROSOFT_CALLBACK, get(microsoft_callback))
         .route_layer(middleware::from_fn_with_state(
@@ -95,6 +96,9 @@ struct LoginOptionsPayload
 
     discord_auth_url: String,
     discord_csrf_token: String,
+
+    twitch_auth_url: String,
+    twitch_csrf_token: String,
 }
 
 async fn login_options(
@@ -122,12 +126,23 @@ async fn login_options(
         .add_scope(Scope::new("email".to_owned()))
         // .set_pkce_challenge(pkce_challenge)
         .url();
+    let (twitch_auth_url, twitch_csrf_token) = cx
+        .server
+        .twitch_auth_client
+        .authorize_url(CsrfToken::new_random)
+        // https://dev.twitch.tv/docs/authentication/scopes/
+        .add_scope(Scope::new("user:read:email".to_owned()))
+        // .set_pkce_challenge(pkce_challenge)
+        .url();
     let payload = LoginOptionsPayload {
         google_auth_url: google_auth_url.to_string(),
         google_csrf_token: google_csrf_token.secret().to_string(),
 
         discord_auth_url: discord_auth_url.to_string(),
         discord_csrf_token: discord_csrf_token.secret().to_string(),
+
+        twitch_auth_url: twitch_auth_url.to_string(),
+        twitch_csrf_token: twitch_csrf_token.secret().to_string(),
     };
     let as_value = serde_json::to_value(payload).unwrap(); // FIXME: unwrap
     let page = cx.server.render(&cx, TEMPLATE, as_value)?;
@@ -174,7 +189,6 @@ async fn discord_callback(
         .server
         .discord_auth_client
         .exchange_code(AuthorizationCode::new(query.code.clone()))
-        .add_extra_param("grant_type", "authorization_code")
         .request_async(async_http_client)
         .await
     {
@@ -186,8 +200,9 @@ async fn discord_callback(
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
-    let client = reqwest::Client::new();
-    let response = match client
+    let response = match cx
+        .server
+        .client
         .get("https://discord.com/api/oauth2/@me")
         .bearer_auth(token.access_token().secret().to_owned())
         .send()
@@ -288,4 +303,94 @@ pub const MICROSOFT_CALLBACK: &str = "/login/microsoft_callback";
 async fn microsoft_callback() -> impl IntoResponse
 {
     "not implemented"
+}
+
+/*
+ * SECTION: TWICH
+ */
+
+pub const TWITCH_CALLBACK: &str = "/login/twitch_callback";
+
+async fn twitch_callback(
+    query: Query<OauthCallbackPayload>,
+    Extension(cx): Extension<RequestContext>,
+) -> impl IntoResponse
+{
+    // NOTE: twitch sucks ass
+    let params = [
+        ("client_id", cx.server.config.twitch_client_id.clone()),
+        ("client_secret", cx.server.config.twitch_client_secret.clone()),
+        ("grant_type", "authorization_code".to_owned()),
+        (
+            "redirect_uri",
+            "http://localhost:3000/login/twitch_callback".to_owned(),
+        ),
+        ("code", query.code.clone()),
+    ];
+    let response = match cx
+        .server
+        .client
+        .post("https://id.twitch.tv/oauth2/token")
+        .form(&params)
+        .send()
+        .await
+    {
+        Ok(res) => res,
+        Err(e) =>
+        {
+            error!(cx.log, "An error occured while exchanging the code: {e}");
+            dbg!(e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    let text = response.text().await;
+    dbg!(text);
+
+    // NOTE: twitch REALLY sucks ass
+    // let token = match cx
+    //     .server
+    //     .discord_auth_client
+    //     .exchange_code(AuthorizationCode::new(query.code.clone()))
+    //     .add_extra_param("client_id", &cx.server.config.twitch_client_id)
+    //     .add_extra_param(
+    //         "client_secret",
+    //         &cx.server.config.twitch_client_secret,
+    //     )
+    //     .add_extra_param("grant_type", "authorization_code")
+    //     .add_extra_param(
+    //         "redirect_uri",
+    //         "http://localhost:3000/login/twitch_callback",
+    //     )
+    //     .request_async(async_http_client)
+    //     .await
+    // {
+    //     Ok(res) => res,
+    //     Err(e) =>
+    //     {
+    //         error!(cx.log, "An error occured while exchanging the code: {e}");
+    //         dbg!(e);
+    //         return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    //     }
+    // };
+    // trace!(cx.log, "twitch login successful";
+    //        "token" => token.access_token().secret().to_owned());
+    // let response = match cx
+    //     .server
+    //     .client
+    //     .get("https://api.twitch.tv/helix/users")
+    //     .bearer_auth(token.access_token().secret().to_owned())
+    //     .send()
+    //     .await
+    // {
+    //     Ok(res) => res,
+    //     Err(e) =>
+    //     {
+    //         error!(cx.log, "An error occured while reqwesting user info: {e}");
+    //         dbg!(e);
+    //         return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    //     }
+    // };
+    // let test = response.text().await.unwrap();
+    // trace!(cx.log, "user info"; "response" => test);
+    Ok("not implemented")
 }
