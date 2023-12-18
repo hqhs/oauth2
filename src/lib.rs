@@ -8,7 +8,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post, Router};
 use axum::Extension;
 use axum::{extract::State, http::Request, middleware::Next};
-use dotenvy::dotenv;
+use axum_extra::extract::CookieJar;
 use hyper::StatusCode;
 use oauth2::basic::BasicClient;
 use reqwest;
@@ -25,13 +25,15 @@ use uuid::Uuid;
 mod auth;
 
 use auth::{
-    build_auth_router, Oauth2Builder, Session, DISCORD_CALLBACK,
-    GOOGLE_CALLBACK, MICROSOFT_CALLBACK, TWITCH_CALLBACK,
+    build_auth_router, logout, Oauth2Builder, Session, DISCORD_CALLBACK,
+    GOOGLE_CALLBACK, MICROSOFT_CALLBACK, SESSION_ID_COOKIE, TWITCH_CALLBACK,
 };
 
 const TEMPLATES_DIR: &str = "templates";
 const STATIC_DIR: &str = "static";
 const ROOT_DIR: &str = env!("CARGO_MANIFEST_DIR"); // NOTE(hqhs): won't compile on systems with non-utf8 paths, but project is not expected to run everywhere
+
+const PROFILE_PAGE: &str = "/profile";
 
 #[derive(Serialize)]
 struct Common
@@ -59,15 +61,18 @@ pub struct ServerState
 
 impl ServerState
 {
-    fn render(
+    fn render<T>(
         &self,
         cx: &RequestContext,
         template: &str,
-        other: serde_json::Value,
+        other: T,
     ) -> Result<String, AppError>
+    where
+        T: Serialize,
     {
         let dev_mode = cx.server.config.dev_mode;
         let request_id = cx.request_id.clone();
+        let other = serde_json::to_value(other).unwrap(); // FIXME(unwrap)
         let params = Common { dev_mode, request_id, other };
         let template_cx = tera::Context::from_serialize(params)?;
         let unlocked = self.templates.read().unwrap();
@@ -101,6 +106,23 @@ pub struct RequestContext
     pub session: Option<Session>,
 }
 
+impl RequestContext
+{
+    fn log_error(&self, err: AppError) -> AppError
+    {
+        match err
+        {
+            AppError::BadRequest => AppError::BadRequest,
+            AppError::Unauthorized => AppError::Unauthorized,
+            _ =>
+            {
+                error!(self.log, "failed to execute request: {err}");
+                err
+            }
+        }
+    }
+}
+
 type StateTy = State<Arc<ServerState>>;
 
 #[derive(Default)]
@@ -130,6 +152,29 @@ pub async fn run_server(cfg: Config) -> anyhow::Result<()>
     Ok(())
 }
 
+async fn session_from_cookies(
+    jar: &CookieJar,
+    db: &Pool<Sqlite>,
+) -> Result<Session, AppError>
+{
+    let session_id =
+        jar.get(SESSION_ID_COOKIE).ok_or(AppError::Unauthorized)?;
+    let session_id = Uuid::try_parse(session_id.value())
+        .map_err(|_| AppError::BadRequest)?;
+    let session_id_bytes: &[u8] = &session_id.as_bytes()[..];
+    let maybe_bytes: Option<Vec<u8>> = sqlx::query_scalar!(
+        "
+select session_id from sessions where session_id = $1
+",
+        session_id_bytes
+    )
+    .fetch_one(db)
+    .await?;
+    let bytes = maybe_bytes.ok_or(AppError::Unauthorized)?;
+    let session_id = Uuid::from_bytes(bytes.try_into().unwrap());
+    Ok(Session { session_id })
+}
+
 pub async fn common_request_context_middleware<B>(
     State(state): StateTy,
     mut req: Request<B>,
@@ -137,12 +182,19 @@ pub async fn common_request_context_middleware<B>(
 ) -> Result<Response, AppError>
 {
     let request_id = Uuid::new_v4().to_string();
-    let log = state.root.new(o!(
+    let mut log = state.root.new(o!(
         "request_id" => request_id.clone(),
         "uri" => req.uri().to_string(),
         "method" => req.method().as_str().to_owned(),
     ));
-    let session = None;
+    let jar = CookieJar::from_headers(req.headers());
+    let session = session_from_cookies(&jar, &state.db).await.ok();
+    if let Some(ref session) = session
+    {
+        log = log.new(o!(
+            "session_id" => session.session_id.to_string().clone(),
+        ));
+    }
     let cx = RequestContext { server: state.clone(), session, request_id, log };
     trace!(
         cx.log,
@@ -244,7 +296,8 @@ pub fn setup_router(state: Arc<ServerState>) -> anyhow::Result<Router>
         .route_layer(commont_cx_middleware.clone());
 
     let authorized_only = Router::new()
-        .route("/profile", get(profile))
+        .route(PROFILE_PAGE, get(profile))
+        .route("/logout", post(logout))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::redirect_unauthorized_middleware,
@@ -272,7 +325,7 @@ async fn reload_templates(
 async fn profile(Extension(cx): Extension<RequestContext>)
     -> impl IntoResponse
 {
-    let page = cx.server.render(&cx, "base.jinja2", Value::Null)?;
+    let page = cx.server.render(&cx, "profile.jinja2", Value::Null)?;
     let r: Result<_, AppError> = Ok(Html(page));
     r
 }
@@ -294,10 +347,18 @@ async fn handler_404() -> impl IntoResponse
 #[derive(thiserror::Error, Debug)]
 pub enum AppError
 {
+    #[error("forbidden url")]
+    Unauthorized,
+    #[error("invalid request parameters")]
+    BadRequest,
     #[error("failed to render template: `{0}`")]
     Template(#[from] tera::Error),
+    #[error("database error: `{0}`")]
+    Database(#[from] sqlx::Error),
     #[error("something unexpected happened: `{0}`")]
     Opaque(#[from] anyhow::Error),
+    #[error("failed to make http request: `{0}`")]
+    Reqwest(#[from] reqwest::Error),
 }
 
 // Tell axum how to convert `AppError` into a response.
@@ -307,8 +368,12 @@ impl IntoResponse for AppError
     {
         let code = match self
         {
+            AppError::Unauthorized => StatusCode::UNAUTHORIZED,
+            AppError::BadRequest => StatusCode::BAD_REQUEST,
             AppError::Opaque(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Template(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::Reqwest(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         code.into_response()
     }

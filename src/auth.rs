@@ -8,7 +8,11 @@ use axum::{
     routing::{get, post, Router},
     Extension,
 };
-use axum_extra::extract::CookieJar;
+use axum_extra::extract::{
+    cookie::{Cookie, SameSite},
+    CookieJar,
+};
+use chrono;
 use hyper::StatusCode;
 use oauth2::{
     basic::BasicClient, reqwest::async_http_client, AuthUrl, AuthorizationCode,
@@ -17,15 +21,15 @@ use oauth2::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use slog::{error, trace};
+use slog::{error, info, trace};
 use uuid::Uuid;
 
 use crate::{
     common_request_context_middleware, AppError, RequestContext, ServerState,
-    StateTy,
+    StateTy, PROFILE_PAGE,
 };
 
-const SESSION_ID_COOKIE: &str = "session-id";
+pub const SESSION_ID_COOKIE: &str = "session-id";
 const LOGIN_PAGE: &str = "/login";
 
 pub fn build_auth_router(state: Arc<ServerState>) -> Router
@@ -78,7 +82,7 @@ type SessionID = Uuid;
 #[derive(Clone)]
 pub struct Session
 {
-    session_id: SessionID,
+    pub session_id: SessionID,
 }
 
 type UserID = Uuid;
@@ -92,20 +96,23 @@ pub struct User
 struct LoginOptionsPayload
 {
     google_auth_url: String,
-    google_csrf_token: String,
 
     discord_auth_url: String,
-    discord_csrf_token: String,
 
     twitch_auth_url: String,
-    twitch_csrf_token: String,
 }
 
 async fn login_options(
     Extension(cx): Extension<RequestContext>,
-) -> Result<Html<String>, AppError>
+) -> Result<Response, AppError>
 {
     const TEMPLATE: &str = "login_options.jinja2";
+
+    if let Some(ref session) = cx.session
+    {
+        // TODO: redirect to profile, dont let user to reauthorize without logging out
+        return Ok(Redirect::to(PROFILE_PAGE).into_response());
+    }
 
     let (pkce_challenge, pkce_verifier) =
         PkceCodeChallenge::new_random_sha256();
@@ -122,7 +129,6 @@ async fn login_options(
         .server
         .discord_auth_client
         .authorize_url(CsrfToken::new_random)
-        .add_scope(Scope::new("identify".to_owned()))
         .add_scope(Scope::new("email".to_owned()))
         // .set_pkce_challenge(pkce_challenge)
         .url();
@@ -136,18 +142,49 @@ async fn login_options(
         .url();
     let payload = LoginOptionsPayload {
         google_auth_url: google_auth_url.to_string(),
-        google_csrf_token: google_csrf_token.secret().to_string(),
-
         discord_auth_url: discord_auth_url.to_string(),
-        discord_csrf_token: discord_csrf_token.secret().to_string(),
-
         twitch_auth_url: twitch_auth_url.to_string(),
-        twitch_csrf_token: twitch_csrf_token.secret().to_string(),
     };
-    let as_value = serde_json::to_value(payload).unwrap(); // FIXME: unwrap
-    let page = cx.server.render(&cx, TEMPLATE, as_value)?;
-    let r: Result<_, AppError> = Ok(Html(page));
+    {
+        // NOTE: store tokens in database
+        let google_token = google_csrf_token.secret().to_string();
+        let discord_token = discord_csrf_token.secret().to_string();
+        let twitch_token = twitch_csrf_token.secret().to_string();
+        let _inserted = sqlx::query!(
+            "
+insert into
+    pending_authorizations (google_token, discord_token, twitch_token)
+values ($1, $2, $3)",
+            google_token,
+            discord_token,
+            twitch_token
+        )
+        .execute(&cx.server.db)
+        .await?;
+    }
+    let page = cx.server.render(&cx, TEMPLATE, payload)?;
+    let r: Result<_, AppError> = Ok(Html(page).into_response());
     r
+}
+
+pub async fn logout(
+    jar: CookieJar,
+    Extension(cx): Extension<RequestContext>,
+) -> impl IntoResponse
+{
+    let session = cx.session.as_ref().unwrap(); // unwrap is safe because it's auth-only route
+    let session_id_bytes = &session.session_id.as_bytes()[..];
+    sqlx::query!(
+        "
+delete from sessions where session_id = $1
+",
+        session_id_bytes
+    )
+    .execute(&cx.server.db)
+    .await?;
+    let response: Result<_, AppError> =
+        Ok((jar.remove(Cookie::named(SESSION_ID_COOKIE)), Redirect::to("/")));
+    response
 }
 
 /*
@@ -168,6 +205,7 @@ struct DiscordUser
 {
     id: String,
     username: String,
+    discriminator: String,
     global_name: Option<String>,
     avatar: Option<String>,
     locale: Option<String>,
@@ -180,46 +218,125 @@ struct DiscordMe
     user: Option<DiscordUser>,
 }
 
-async fn discord_callback(
-    query: Query<OauthCallbackPayload>,
-    Extension(cx): Extension<RequestContext>,
-) -> impl IntoResponse
+async fn discord_callback_inner(
+    query: &OauthCallbackPayload,
+    cx: &RequestContext,
+) -> Result<SessionID, AppError>
 {
-    let token = match cx
+    let token = query.state.as_deref().ok_or(AppError::BadRequest)?;
+    // NOTE: validate csrf first
+    let result = sqlx::query!(
+        "
+delete from
+    pending_authorizations
+where
+    discord_token = $1",
+        token,
+    )
+    .execute(&cx.server.db)
+    .await?;
+    if result.rows_affected() != 1
+    {
+        return Err(AppError::BadRequest);
+    }
+    let token = cx
         .server
         .discord_auth_client
         .exchange_code(AuthorizationCode::new(query.code.clone()))
         .request_async(async_http_client)
         .await
-    {
-        Ok(res) => res,
-        Err(e) =>
-        {
-            error!(cx.log, "An error occured while exchanging the code: {e}");
-            dbg!(e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
-    let response = match cx
+        .map_err(|e| AppError::Opaque(e.into()))?;
+    let response = cx
         .server
         .client
         .get("https://discord.com/api/oauth2/@me")
         .bearer_auth(token.access_token().secret().to_owned())
         .send()
-        .await
-    {
-        Ok(res) => res,
-        Err(e) =>
+        .await?;
+    let me = response.json::<DiscordMe>().await.unwrap();
+    let me = me.user.unwrap(); // FIXME(hqhs): unwrap
+    let mut tx = cx.server.db.begin().await?;
+    let now = chrono::Utc::now();
+    let session_id = Uuid::new_v4();
+    let session_id_bytes: &[u8] = &session_id.as_bytes()[..];
+    let user_id: Uuid = {
+        let user_id = Uuid::new_v4();
+        let user_id_bytes: &[u8] = &user_id.as_bytes()[..];
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar!(
+            "
+insert into
+    users (user_id, handle, created_at, last_updated)
+values ($1, $2, $3, $4)
+on conflict(handle) do update set last_updated = $4
+returning user_id",
+            user_id_bytes,
+            me.username,
+            now,
+            now,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if let Some(bytes) = bytes
         {
-            error!(cx.log, "An error occured while reqwesting user info: {e}");
-            dbg!(e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            Uuid::from_bytes(bytes.try_into().unwrap())
+        }
+        else
+        {
+            user_id
         }
     };
-    let me = response.json::<DiscordMe>().await.unwrap();
-    dbg!(me);
-    // trace!(cx.log, "authorizatin OK"; "email" => me.user.unwrap().email.unwrap());
-    Ok("not implemented")
+    let user_id_bytes = &user_id.as_bytes()[..];
+    let _inserted = sqlx::query!(
+        "
+insert into
+    discord_users (user_id, discord_id, username, avatar, locale, email)
+values ($1, $2, $3, $4, $5, $6)
+on conflict(discord_id) do nothing", // FIXME(hqhs): do nothing instead of updating correct fields
+        user_id_bytes,
+        me.id,
+        me.username,
+        me.avatar,
+        me.locale,
+        me.email,
+    )
+    .execute(&mut *tx)
+    .await?;
+    // TODO: limit amount of active sessions for single user
+    let _inserted = sqlx::query!(
+        "
+insert into
+    sessions (session_id, user_id, last_updated)
+values ($1, $2, $3)",
+        session_id_bytes,
+        user_id_bytes,
+        now,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(session_id)
+}
+
+async fn discord_callback(
+    query: Query<OauthCallbackPayload>,
+    jar: CookieJar,
+    Extension(cx): Extension<RequestContext>,
+) -> impl IntoResponse
+{
+    let session_id = discord_callback_inner(&query, &cx)
+        .await
+        .map_err(|e| cx.log_error(e))?;
+    info!(cx.log, "authorized user from discord; {session_id}");
+    let cookie = Cookie::build(SESSION_ID_COOKIE, session_id.to_string())
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Strict)
+        .path("/")
+        // .max_age(Duration::from_secs(24)) // FIXME(hqhs): wtf is with the import
+        .finish();
+    let response: Result<_, AppError> =
+        Ok((jar.add(cookie), Redirect::to(PROFILE_PAGE)));
+    response
 }
 
 #[derive(Default)]
