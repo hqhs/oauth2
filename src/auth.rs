@@ -110,7 +110,6 @@ async fn login_options(
 
     if let Some(ref session) = cx.session
     {
-        // TODO: redirect to profile, dont let user to reauthorize without logging out
         return Ok(Redirect::to(PROFILE_PAGE).into_response());
     }
 
@@ -330,7 +329,7 @@ async fn discord_callback(
     let cookie = Cookie::build(SESSION_ID_COOKIE, session_id.to_string())
         .http_only(true)
         .secure(true)
-        .same_site(SameSite::Strict)
+        .same_site(SameSite::Lax) // NOTE: SameSite::Strict doesn't work properly for some reason; also, since auth is stateful sessions, Lax is fine
         .path("/")
         // .max_age(Duration::from_secs(24)) // FIXME(hqhs): wtf is with the import
         .finish();

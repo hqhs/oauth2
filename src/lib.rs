@@ -164,8 +164,12 @@ async fn session_from_cookies(
     let session_id_bytes: &[u8] = &session_id.as_bytes()[..];
     let maybe_bytes: Option<Vec<u8>> = sqlx::query_scalar!(
         "
-select session_id from sessions where session_id = $1
-",
+select
+    session_id
+from
+    sessions
+where
+    session_id = $1",
         session_id_bytes
     )
     .fetch_one(db)

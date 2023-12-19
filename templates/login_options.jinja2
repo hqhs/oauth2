@@ -9,12 +9,10 @@
     </div>
 
     <div class="mt-5 sm:mx-auto sm:w-full sm:max-w-sm">
-        <button type="button" class="flex items-center bg-indigo-500 w-full border border-transparent py-3 px-6 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+        <button type="button" class="flex items-center bg-indigo-500 w-full border border-transparent py-3 px-6 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2" x-data @click="window.location.href = '{{ discord_auth_url }}'">
             <i class="fa-brands fa-discord fa-2xl" ></i>
             <div class="pl-10">
-                <a href="{{ discord_auth_url }}">
-                    Continue with Discord
-                </a>
+                Continue with Discord
             </div>
         </button>
     </div>
