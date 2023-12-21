@@ -28,6 +28,10 @@ use auth::{
     build_auth_router, logout, Oauth2Builder, Session, DISCORD_CALLBACK,
     GOOGLE_CALLBACK, MICROSOFT_CALLBACK, SESSION_ID_COOKIE, TWITCH_CALLBACK,
 };
+// used by openapi generator
+pub use auth::{
+    login_options_json, LoginOptionsPayload, __path_login_options_json,
+};
 
 const TEMPLATES_DIR: &str = "templates";
 const STATIC_DIR: &str = "static";

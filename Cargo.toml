@@ -7,6 +7,10 @@ edition = "2021"
 name = "service"
 path = "bin/service.rs"
 
+[[bin]]
+name = "openapi"
+path = "bin/openapi.rs"
+
 [dependencies]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -45,6 +49,7 @@ slog-term = "2.9.0"
 uuid = { version = "1.6.1", features = ["v4"]}
 thiserror = "1.0.50"
 chrono = "0.4.31"
+utoipa = { version = "4", features = ["axum_extras"] }
 
 
 [profile.release]

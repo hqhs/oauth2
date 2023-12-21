@@ -6,7 +6,7 @@ use axum::{
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post, Router},
-    Extension,
+    Extension, Json,
 };
 use axum_extra::extract::{
     cookie::{Cookie, SameSite},
@@ -22,6 +22,7 @@ use oauth2::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use slog::{error, info, trace};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
@@ -45,6 +46,11 @@ pub fn build_auth_router(state: Arc<ServerState>) -> Router
             common_request_context_middleware,
         ))
         .with_state(state)
+}
+
+pub fn build_auth_router_json(state: Arc<ServerState>) -> Router
+{
+    Router::new().route(LOGIN_PAGE, get(login_options_json)).with_state(state)
 }
 
 pub async fn fetch_session_from_cookies(
@@ -92,8 +98,8 @@ pub struct User
     user_id: UserID,
 }
 
-#[derive(Serialize)]
-struct LoginOptionsPayload
+#[derive(Serialize, ToSchema)]
+pub struct LoginOptionsPayload
 {
     google_auth_url: String,
 
@@ -102,21 +108,13 @@ struct LoginOptionsPayload
     twitch_auth_url: String,
 }
 
-async fn login_options(
-    Extension(cx): Extension<RequestContext>,
-) -> Result<Response, AppError>
+async fn login_options_inner(
+    server: &ServerState,
+) -> anyhow::Result<LoginOptionsPayload>
 {
-    const TEMPLATE: &str = "login_options.jinja2";
-
-    if let Some(ref session) = cx.session
-    {
-        return Ok(Redirect::to(PROFILE_PAGE).into_response());
-    }
-
     let (pkce_challenge, pkce_verifier) =
         PkceCodeChallenge::new_random_sha256();
-    let (google_auth_url, google_csrf_token) = cx
-        .server
+    let (google_auth_url, google_csrf_token) = server
         .google_auth_client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new("openid".to_owned()))
@@ -124,15 +122,13 @@ async fn login_options(
         .url();
     let (pkce_challenge, pkce_verifier) =
         PkceCodeChallenge::new_random_sha256();
-    let (discord_auth_url, discord_csrf_token) = cx
-        .server
+    let (discord_auth_url, discord_csrf_token) = server
         .discord_auth_client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new("email".to_owned()))
         // .set_pkce_challenge(pkce_challenge)
         .url();
-    let (twitch_auth_url, twitch_csrf_token) = cx
-        .server
+    let (twitch_auth_url, twitch_csrf_token) = server
         .twitch_auth_client
         .authorize_url(CsrfToken::new_random)
         // https://dev.twitch.tv/docs/authentication/scopes/
@@ -158,12 +154,44 @@ values ($1, $2, $3)",
             discord_token,
             twitch_token
         )
-        .execute(&cx.server.db)
+        .execute(&server.db)
         .await?;
     }
+    Ok(payload)
+}
+
+async fn login_options(
+    Extension(cx): Extension<RequestContext>,
+) -> Result<Response, AppError>
+{
+    const TEMPLATE: &str = "login_options.jinja2";
+
+    if let Some(ref session) = cx.session
+    {
+        return Ok(Redirect::to(PROFILE_PAGE).into_response());
+    }
+
+    let payload = login_options_inner(&cx.server).await?;
     let page = cx.server.render(&cx, TEMPLATE, payload)?;
     let r: Result<_, AppError> = Ok(Html(page).into_response());
     r
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/login",
+    responses(
+        (status = 200, description = "List of links to login in browser")
+    ),
+    params()
+)]
+pub async fn login_options_json(
+    Extension(cx): Extension<RequestContext>,
+) -> Result<Json<LoginOptionsPayload>, AppError>
+{
+    // TODO(hqhs): return error if user already authorized, not redirect
+    let payload = login_options_inner(&cx.server).await?;
+    Ok(Json(payload))
 }
 
 pub async fn logout(
